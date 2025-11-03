@@ -1,0 +1,64 @@
+name: Go Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  releases-matrix:
+    name: Release Binary
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goos: [linux, windows, darwin]
+        goarch: [amd64, arm64]
+        exclude:
+          - goos: windows
+            goarch: arm64
+          - goos: darwin
+            goarch: arm64
+
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.23'
+          
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          binary_name=""
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            binary_name="connection-dump.exe"
+            file_name="sourceCounter.go"
+          else
+            binary_name="connection-dump"
+            file_name="pkg/destinationCounter.go"
+          fi
+          go build -o $binary_name $file_name
+          
+      - name: Archive Release
+        run: |
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            zip "connection-dump-${{ matrix.goos }}-${{ matrix.goarch }}.zip" connection-dump.exe
+          else
+            tar czvf "connection-dump-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" connection-dump
+          fi
+          
+      - name: Upload Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            multicast-tool-${{ matrix.goos }}-${{ matrix.goarch }}.zip
+            multicast-tool-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
