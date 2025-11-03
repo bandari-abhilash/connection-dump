@@ -58,7 +58,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: |
-            multicast-tool-${{ matrix.goos }}-${{ matrix.goarch }}.zip
-            multicast-tool-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz
+            connection-dump-${{ matrix.goos }}-${{ matrix.goarch }}.zip
+            connection-dump-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
