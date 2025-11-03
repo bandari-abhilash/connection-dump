@@ -29,7 +29,7 @@ func init() {
 func main() {
 	ports := parsePortRange(portRange)
 	if len(ports) == 0 {
-		log.Fatal("Invalid port range")
+		log.Fatal("Please enter a valid port range")
 	}
 
 	var wg sync.WaitGroup
