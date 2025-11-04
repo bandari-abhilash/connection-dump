@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -13,23 +14,49 @@ import (
 
 var (
 	multicastGroup string
-	portRange      string
 	ifaceName      string
 	timeFrame      int
 )
 
 func init() {
 	flag.StringVar(&multicastGroup, "group", "239.1.1.1", "Multicast group IP")
-	flag.StringVar(&portRange, "ports", "7711-7723", "Port range (e.g., 10000-10019)")
 	flag.StringVar(&ifaceName, "iface", "", "Network interface (optional)")
 	flag.IntVar(&timeFrame, "t", 30, "Time Frame for log Report")
 	flag.Parse()
 }
 
+func readPortsFromCSV(filename string) ([]int, error) {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return nil, err
+	}
+	content := strings.TrimSpace(string(data))
+	if content == "" {
+		return nil, nil
+	}
+	parts := strings.Split(content, ",")
+	var ports []int
+	for _, part := range parts {
+		p := strings.TrimSpace(part)
+		if p == "" {
+			continue
+		}
+		port, err := strconv.Atoi(p)
+		if err != nil {
+			return nil, fmt.Errorf("invalid port: %v (%w)", p, err)
+		}
+		ports = append(ports, port)
+	}
+	return ports, nil
+}
+
 func main() {
-	ports := parsePortRange(portRange)
+	ports, err := readPortsFromCSV("ports.csv")
+	if err != nil {
+		log.Fatalf("Failed to read ports from ports.csv: %v", err)
+	}
 	if len(ports) == 0 {
-		log.Fatal("Please enter a valid port range")
+		log.Fatal("No valid ports specified in ports.csv")
 	}
 
 	var wg sync.WaitGroup
@@ -48,20 +75,6 @@ func main() {
 	for range ticker.C {
 		logReport("Receiver", multicastGroup, counters)
 	}
-}
-
-func parsePortRange(rangeStr string) []int {
-	parts := strings.Split(rangeStr, "-")
-	if len(parts) != 2 {
-		log.Fatal("Port range must be start-end")
-	}
-	start, _ := strconv.Atoi(parts[0])
-	end, _ := strconv.Atoi(parts[1])
-	var ports []int
-	for i := start; i <= end; i++ {
-		ports = append(ports, i)
-	}
-	return ports
 }
 
 func listenMulticast(group string, port int, ifaceName string, counter *int64, wg *sync.WaitGroup) {
@@ -112,5 +125,6 @@ func logReport(prefix, group string, counters map[int]*int64) {
 		// Reset for next interval
 		*count = 0
 	}
-	fmt.Printf("%s | Total: %d packets\n", strings.Join(portStrs, " | "), total)
+	fmt.Printf("%s\n", strings.Join(portStrs, " | "))
+	fmt.Printf("TOTAL: %d packets/min | AVG: %.1f pkts/port\n\n", total, float64(total)/float64(len(counters)))
 }
