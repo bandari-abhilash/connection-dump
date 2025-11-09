@@ -197,3 +197,72 @@ jobs:
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Create Linux packages (RPM and DEB)
+  create-packages:
+    name: Create Linux Packages
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    if: github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true
+    
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          
+      - name: Install libpcap-dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpcap-dev
+          
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.23'
+          
+      - name: Install nfpm
+        run: |
+          curl -sfL https://github.com/goreleaser/nfpm/releases/download/v2.36.1/nfpm_2.36.1_Linux_x86_64.tar.gz | sudo tar -xz -C /usr/local/bin nfpm
+          
+      - name: Build binaries for packaging
+        run: |
+          mkdir -p build/linux-amd64 build/linux-arm64
+          GOOS=linux GOARCH=amd64 go build -o build/linux-amd64/sourceCounter sourceCounter.go
+          GOOS=linux GOARCH=amd64 go build -o build/linux-amd64/destinationCounter pkg/destinationCounter.go
+          GOOS=linux GOARCH=arm64 go build -o build/linux-arm64/sourceCounter sourceCounter.go
+          GOOS=linux GOARCH=arm64 go build -o build/linux-arm64/destinationCounter pkg/destinationCounter.go
+          
+      - name: Create amd64 package config
+        run: |
+          VERSION=${{ needs.build-and-test.outputs.version }}
+          VERSION=${VERSION#v}
+          printf 'name: connection-dump\narch: amd64\nplatform: linux\nversion: %s\nsection: net\npriority: optional\nmaintainer: "Connection Dump Team <team@connectiondump.com>"\ndescription: "A better alternative for tcpdump written in GO"\nhomepage: https://github.com/%s\nlicense: MIT\nbindir: /usr/local/bin\nfiles:\n  build/linux-amd64/sourceCounter: /usr/local/bin/sourceCounter\n  build/linux-amd64/destinationCounter: /usr/local/bin/destinationCounter\n' "$VERSION" "${{ github.repository }}" > nfpm-amd64.yaml
+          
+      - name: Create arm64 package config
+        run: |
+          VERSION=${{ needs.build-and-test.outputs.version }}
+          VERSION=${VERSION#v}
+          printf 'name: connection-dump\narch: arm64\nplatform: linux\nversion: %s\nsection: net\npriority: optional\nmaintainer: "Connection Dump Team <team@connectiondump.com>"\ndescription: "A better alternative for tcpdump written in GO"\nhomepage: https://github.com/%s\nlicense: MIT\nbindir: /usr/local/bin\nfiles:\n  build/linux-arm64/sourceCounter: /usr/local/bin/sourceCounter\n  build/linux-arm64/destinationCounter: /usr/local/bin/destinationCounter\n' "$VERSION" "${{ github.repository }}" > nfpm-arm64.yaml
+          
+      - name: Create DEB packages
+        run: |
+          nfpm package -p deb -f nfpm-amd64.yaml --target .
+          nfpm package -p deb -f nfpm-arm64.yaml --target .
+          
+      - name: Create RPM packages
+        run: |
+          nfpm package -p rpm -f nfpm-amd64.yaml --target .
+          nfpm package -p rpm -f nfpm-arm64.yaml --target .
+          
+      - name: Upload packages to release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.build-and-test.outputs.version }}
+          name: Release ${{ needs.build-and-test.outputs.version }}
+          files: |
+            *.deb
+            *.rpm
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
