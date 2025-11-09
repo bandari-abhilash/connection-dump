@@ -18,6 +18,8 @@ jobs:
     name: Build and Test
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     
     steps:
       - uses: actions/checkout@v3
@@ -67,7 +69,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # Release binaries for all platforms
+  # Release binaries for all platforms (triggered by tag push)
   releases-matrix:
     name: Release Binary
     runs-on: ubuntu-latest
@@ -119,8 +121,74 @@ jobs:
           
       - name: Upload Release
         uses: softprops/action-gh-release@v1
-        if: startsWith(github.ref, 'refs/tags/')
         with:
+          files: |
+            connection-dump-${{ matrix.goos }}-${{ matrix.goarch }}.zip
+            connection-dump-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Alternative release job that runs after build-and-test
+  release-from-pr:
+    name: Release from PR
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    if: github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true
+    strategy:
+      matrix:
+        goos: [linux, windows, darwin]
+        goarch: [amd64, arm64]
+        exclude:
+          - goos: windows
+            goarch: arm64
+          - goos: darwin
+            goarch: arm64
+
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          
+      - name: Install libpcap-dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpcap-dev
+          
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.23'
+          
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          # Build both sourceCounter and destinationCounter for each platform
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            go build -o sourceCounter.exe sourceCounter.go
+            go build -o destinationCounter.exe pkg/destinationCounter.go
+          else
+            go build -o sourceCounter sourceCounter.go
+            go build -o destinationCounter pkg/destinationCounter.go
+          fi
+          
+      - name: Archive Release
+        run: |
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            zip "connection-dump-${{ matrix.goos }}-${{ matrix.goarch }}.zip" sourceCounter.exe destinationCounter.exe
+          else
+            tar czvf "connection-dump-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" sourceCounter destinationCounter
+          fi
+          
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.build-and-test.outputs.version }}
+          name: Release ${{ needs.build-and-test.outputs.version }}
           files: |
             connection-dump-${{ matrix.goos }}-${{ matrix.goarch }}.zip
             connection-dump-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz
