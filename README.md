@@ -13,14 +13,14 @@ A better alternative for tcpdump written in GO. This tool allows TCP and UDP tra
 ## Installation
 
 ### Option 1: Install from Binary Releases
-Download the appropriate binary from the [Releases](https://github.com/yourusername/connection-dump/releases) page.
+Download the appropriate binary from the [Releases](https://github.com/bandari-abhilash/connection-dump/releases) page.
 
 ### Option 2: Install from Linux Package Repositories
 
 #### For Debian/Ubuntu systems (.deb packages):
 ```bash
 # Download the latest .deb package
-wget https://github.com/yourusername/connection-dump/releases/latest/download/connection-dump_1.0.0_amd64.deb
+wget https://github.com/bandari-abhilash/connection-dump/releases/latest/download/connection-dump_1.0.0_amd64.deb
 
 # Install the package
 sudo dpkg -i connection-dump_1.0.0_amd64.deb
@@ -32,7 +32,7 @@ sudo apt install ./connection-dump_1.0.0_amd64.deb
 #### For RHEL/CentOS/Fedora systems (.rpm packages):
 ```bash
 # Download the latest .rpm package
-wget https://github.com/yourusername/connection-dump/releases/latest/download/connection-dump-1.0.0-1.x86_64.rpm
+wget https://github.com/bandari-abhilash/connection-dump/releases/latest/download/connection-dump-1.0.0-1.x86_64.rpm
 
 # Install the package
 sudo rpm -i connection-dump-1.0.0-1.x86_64.rpm
