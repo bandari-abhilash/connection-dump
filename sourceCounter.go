@@ -24,6 +24,9 @@ var (
 	timeout        time.Duration = -1
 	listIfaces     bool
 	reportInterval int
+	protocol       string
+	logFile        string
+	verbose        bool
 )
 
 func init() {
@@ -31,6 +34,9 @@ func init() {
 	flag.StringVar(&multicastGroup, "group", "239.1.1.1", "Multicast group IP")
 	flag.StringVar(&ifaceName, "iface", "en0", "Network interface")
 	flag.IntVar(&reportInterval, "interval", 10, "Reporting interval in seconds")
+	flag.StringVar(&protocol, "proto", "udp", "Protocol to capture (udp, tcp, or both)")
+	flag.StringVar(&logFile, "log", "", "Log file to write packet details (optional)")
+	flag.BoolVar(&verbose, "v", false, "Verbose output")
 	flag.Parse()
 }
 
@@ -70,21 +76,53 @@ func main() {
 	}
 	defer handle.Close()
 
-	// BPF filter: UDP to multicast group, specific ports, outbound (src not multicast)
+	// Build BPF filter based on protocol
 	startPort, endPort := ports[0], ports[len(ports)-1]
-	filter := fmt.Sprintf("udp and ip dst %s and udp dst portrange %d-%d",
-		multicastGroup, startPort, endPort)
+	var filter string
+
+	switch protocol {
+	case "udp":
+		filter = fmt.Sprintf("udp and ip dst %s and udp dst portrange %d-%d",
+			multicastGroup, startPort, endPort)
+	case "tcp":
+		filter = fmt.Sprintf("tcp and ip dst %s and tcp dst portrange %d-%d",
+			multicastGroup, startPort, endPort)
+	case "both":
+		filter = fmt.Sprintf("(udp or tcp) and ip dst %s and (udp dst portrange %d-%d or tcp dst portrange %d-%d)",
+			multicastGroup, startPort, endPort, startPort, endPort)
+	default:
+		log.Fatalf("Invalid protocol: %s. Use 'udp', 'tcp', or 'both'", protocol)
+	}
 
 	fmt.Printf("Applying BPF filter: %s\n", filter)
 	if err := handle.SetBPFFilter(filter); err != nil {
 		log.Fatalf("Error setting BPF filter: %v\nFilter was: %s", err, filter)
 	}
-	fmt.Printf("✓ Capturing on %s for group %s (ports %d-%d)\n",
-		ifaceName, multicastGroup, startPort, endPort)
+	fmt.Printf("✓ Capturing on %s for group %s (ports %d-%d) using protocol: %s\n",
+		ifaceName, multicastGroup, startPort, endPort, protocol)
 
 	counters := make(map[int]*int64)
 	for _, port := range ports {
 		counters[port] = new(int64)
+	}
+
+	// Initialize log file if specified
+	var logWriter *os.File
+	var logChan chan string
+	if logFile != "" {
+		var err error
+		logWriter, err = os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			log.Fatalf("Error opening log file: %v", err)
+		}
+		defer logWriter.Close()
+		logChan = make(chan string, 1000)
+		go func() {
+			for logEntry := range logChan {
+				timestamp := time.Now().Format("2006-01-02 15:04:05.000")
+				fmt.Fprintf(logWriter, "[%s] %s\n", timestamp, logEntry)
+			}
+		}()
 	}
 
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
@@ -93,7 +131,10 @@ func main() {
 	go func() {
 		defer wg.Done()
 		for packet := range packetSource.Packets() {
-			countPacket(packet, portSet, counters, multicastGroup)
+			countPacket(packet, portSet, counters, multicastGroup, protocol, logChan)
+		}
+		if logChan != nil {
+			close(logChan)
 		}
 	}()
 
@@ -132,7 +173,7 @@ func readPortsFromCSV(filename string) ([]int, error) {
 	return ports, nil
 }
 
-func countPacket(packet gopacket.Packet, portSet map[int]bool, counters map[int]*int64, group string) {
+func countPacket(packet gopacket.Packet, portSet map[int]bool, counters map[int]*int64, group string, protocol string, logChan chan string) {
 	ipLayer := packet.Layer(layers.LayerTypeIPv4)
 	if ipLayer == nil {
 		return
@@ -142,21 +183,60 @@ func countPacket(packet gopacket.Packet, portSet map[int]bool, counters map[int]
 		return
 	}
 
-	udpLayer := packet.Layer(layers.LayerTypeUDP)
-	if udpLayer == nil {
-		return
-	}
-	udp, _ := udpLayer.(*layers.UDP)
-	if _, ok := portSet[int(udp.DstPort)]; !ok {
-		return
-	}
-
 	// Outbound: src is not multicast (local sender)
 	if isMulticast(ip.SrcIP) {
 		return
 	}
 
-	*counters[int(udp.DstPort)]++
+	var port int
+	var packetSize int
+	var srcPort int
+	var matched bool
+	var protoType string
+
+	// Check UDP layer
+	if protocol == "udp" || protocol == "both" {
+		udpLayer := packet.Layer(layers.LayerTypeUDP)
+		if udpLayer != nil {
+			udp, _ := udpLayer.(*layers.UDP)
+			if _, ok := portSet[int(udp.DstPort)]; ok {
+				port = int(udp.DstPort)
+				srcPort = int(udp.SrcPort)
+				packetSize = len(udp.Payload)
+				matched = true
+				protoType = "UDP"
+				*counters[port]++
+			}
+		}
+	}
+
+	// Check TCP layer
+	if !matched && (protocol == "tcp" || protocol == "both") {
+		tcpLayer := packet.Layer(layers.LayerTypeTCP)
+		if tcpLayer != nil {
+			tcp, _ := tcpLayer.(*layers.TCP)
+			if _, ok := portSet[int(tcp.DstPort)]; ok {
+				port = int(tcp.DstPort)
+				srcPort = int(tcp.SrcPort)
+				packetSize = len(tcp.Payload)
+				matched = true
+				protoType = "TCP"
+				*counters[port]++
+			}
+		}
+	}
+
+	// Log packet details if logging is enabled and packet matched
+	if matched && logChan != nil {
+		logEntry := fmt.Sprintf("%s %s:%d -> %s:%d Size: %d bytes",
+			protoType, ip.SrcIP, srcPort, ip.DstIP, port, packetSize)
+		logChan <- logEntry
+	}
+
+	if verbose && matched {
+		fmt.Printf("[%s] %s:%d -> %s:%d Size: %d bytes\n",
+			protoType, ip.SrcIP, srcPort, ip.DstIP, port, packetSize)
+	}
 }
 
 func isMulticast(ip net.IP) bool {

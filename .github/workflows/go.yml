@@ -4,14 +4,69 @@ on:
   push:
     tags:
       - 'v*'
+  pull_request:
+    types: [closed]
+    branches:
+      - master
 
 permissions:
   contents: write
 
 jobs:
+  # Build and test on PR merge
+  build-and-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true
+    
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.23'
+          
+      - name: Get version info
+        id: version
+        run: |
+          # Get the latest tag or create one based on date and commit count
+          if [ -z "$(git tag --sort=-version:refname | head -n1)" ]; then
+            VERSION="v1.0.0"
+          else
+            LAST_TAG=$(git tag --sort=-version:refname | head -n1)
+            # Extract version numbers and increment patch version
+            VERSION=$(echo $LAST_TAG | awk -F. '{print $1"."$2"."$3+1}')
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Release version: $VERSION"
+          
+      - name: Build and Test
+        run: |
+          # Test build for sourceCounter
+          go build -o sourceCounter sourceCounter.go
+          # Test build for destinationCounter
+          go build -o destinationCounter pkg/destinationCounter.go
+          # Run basic tests
+          ./sourceCounter -h
+          ./destinationCounter -h
+          
+      - name: Create and Push Tag
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git tag -a ${{ steps.version.outputs.version }} -m "Release ${{ steps.version.outputs.version }}"
+          git push origin ${{ steps.version.outputs.version }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Release binaries for all platforms
   releases-matrix:
     name: Release Binary
     runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
     strategy:
       matrix:
         goos: [linux, windows, darwin]
@@ -35,22 +90,21 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
-          binary_name=""
+          # Build both sourceCounter and destinationCounter for each platform
           if [ "${{ matrix.goos }}" = "windows" ]; then
-            binary_name="connection-dump.exe"
-            file_name="sourceCounter.go"
+            go build -o sourceCounter.exe sourceCounter.go
+            go build -o destinationCounter.exe pkg/destinationCounter.go
           else
-            binary_name="connection-dump"
-            file_name="pkg/destinationCounter.go"
+            go build -o sourceCounter sourceCounter.go
+            go build -o destinationCounter pkg/destinationCounter.go
           fi
-          go build -o $binary_name $file_name
           
       - name: Archive Release
         run: |
           if [ "${{ matrix.goos }}" = "windows" ]; then
-            zip "connection-dump-${{ matrix.goos }}-${{ matrix.goarch }}.zip" connection-dump.exe
+            zip "connection-dump-${{ matrix.goos }}-${{ matrix.goarch }}.zip" sourceCounter.exe destinationCounter.exe
           else
-            tar czvf "connection-dump-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" connection-dump
+            tar czvf "connection-dump-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" sourceCounter destinationCounter
           fi
           
       - name: Upload Release
@@ -60,5 +114,8 @@ jobs:
           files: |
             connection-dump-${{ matrix.goos }}-${{ matrix.goarch }}.zip
             connection-dump-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz
+          draft: false
+          prerelease: false
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
